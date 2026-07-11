@@ -1,0 +1,93 @@
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * The supplied design (bootstrap.min.css + common.css + main.css + responsive.css)
+ * is linked from index.html and is the single source of truth for how the app
+ * looks. Tailwind is layered on top — with preflight and .container disabled —
+ * and is used only for UI the original HTML never had: the likers modal, the
+ * privacy selector, the image preview, toasts and loading skeletons.
+ *
+ * Everything below is scoped to those new pieces, so no original rule is touched.
+ */
+
+/* Keeps the feed's own font inside the new Tailwind-styled surfaces. */
+.bs-ui {
+  font-family: 'Poppins', sans-serif;
+}
+
+/* Skeleton shimmer for the feed's loading state. */
+@keyframes bs-shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+.bs-skeleton {
+  position: relative;
+  overflow: hidden;
+  background-color: rgba(0, 0, 0, 0.06);
+}
+
+.bs-skeleton::after {
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background-image: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0) 0,
+    rgba(255, 255, 255, 0.45) 50%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  animation: bs-shimmer 1.4s infinite;
+  content: '';
+}
+
+._dark_wrapper .bs-skeleton {
+  background-color: rgba(255, 255, 255, 0.08);
+}
+
+/* The design has no textarea autosize; growing with content avoids a scrollbar
+   inside a 2-line comment box. */
+.bs-autosize {
+  resize: none;
+  overflow-y: hidden;
+}
+
+/*
+ * The comment bubble is `max-width: fit-content`, and main.css hangs the
+ * Like/Reply/time row underneath it with `position: absolute`. The supplied
+ * markup only ever showed one long placeholder comment, so the bubble was always
+ * wide enough. A real short comment ("Nice!") makes the bubble narrow and that
+ * row wraps onto two lines. Pinning it to one line restores the intended look.
+ */
+._comment_reply_num {
+  white-space: nowrap;
+}
+
+/* Same cause: keep a very short comment's bubble wide enough for the author name
+   and the floating like-count pill not to collide. */
+._comment_details {
+  min-width: 220px;
+}
+
+/*
+ * The stacked liker avatars. The design sizes these with `max-width: 32px` and
+ * lets the image's own aspect ratio supply the height, which works because its
+ * placeholder faces are square. Real user avatars are not guaranteed to be, and
+ * a non-square one renders as an oval. Pinning the box and cropping to fill
+ * keeps them circular whatever gets uploaded.
+ */
+._feed_inner_timeline_total_reacts_image ._react_img,
+._feed_inner_timeline_total_reacts_image ._react_img1 {
+  width: 32px;
+  height: 32px;
+  object-fit: cover;
+}
+
+/* Respect users who have asked the OS for less motion. */
+@media (prefers-reduced-motion: reduce) {
+  .bs-skeleton::after {
+    animation: none;
+  }
+}

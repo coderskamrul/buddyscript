@@ -1,0 +1,53 @@
+# ---- Secrets ---------------------------------------------------------------
+# .env holds the live MongoDB Atlas connection string and the JWT signing keys.
+# Committing it leaks database credentials to anyone who can read the repo, and
+# git history keeps them even after a later deletion. Use .env.example instead.
+.env
+.env.*
+!.env.example
+
+# ---- Dependencies ----------------------------------------------------------
+node_modules/
+.pnp
+.pnp.js
+
+# ---- Build output ----------------------------------------------------------
+dist/
+build/
+*.tsbuildinfo
+.vite/
+
+# NOTE: client/public/assets/ IS tracked. It is the design's stylesheets and
+# images, and Vite serves it straight from public/ — it must be in the repo for a
+# Vercel build to produce a working site.
+
+# ---- User uploads ----------------------------------------------------------
+# Runtime data, not source. The folder itself is kept via .gitkeep so the server
+# has somewhere to write on a fresh clone.
+server/uploads/*
+!server/uploads/.gitkeep
+
+# ---- Logs / debug ----------------------------------------------------------
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ---- Editors / OS ----------------------------------------------------------
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
+.vscode/*
+!.vscode/extensions.json
+
+# ---- Test / coverage -------------------------------------------------------
+coverage/
+.nyc_output/
+
+# ---- Misc ------------------------------------------------------------------
+.cache/
+.temp/
+.tmp/

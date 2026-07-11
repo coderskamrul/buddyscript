@@ -1,0 +1,58 @@
+# Render blueprint for the API. Push this file and Render can create the service
+# from it (New > Blueprint), or configure the same values by hand in the UI.
+#
+# The frontend is NOT here — it goes to Vercel (see client/vercel.json).
+services:
+  - type: web
+    name: buddyscript-api
+    runtime: node
+    plan: free
+    region: oregon
+
+    # The Express app lives in /server, so build and start from there.
+    rootDir: server
+    buildCommand: npm ci
+    startCommand: npm start
+
+    healthCheckPath: /api/health
+
+    envVars:
+      - key: NODE_ENV
+        value: production
+
+      # Render injects PORT; the server already reads it from the environment.
+
+      # Set these in the Render dashboard (marked sync:false so they are NOT
+      # committed here). MONGODB_URI is your Atlas connection string, and the two
+      # JWT secrets must be fresh random values — generate each with:
+      #   node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
+      - key: MONGODB_URI
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: JWT_REFRESH_SECRET
+        sync: false
+
+      - key: MONGODB_DB
+        value: buddyscript
+      - key: JWT_EXPIRY
+        value: 24h
+      - key: JWT_REFRESH_EXPIRY
+        value: 30d
+
+      # Only used when the browser talks to this API cross-origin. With the
+      # Vercel rewrite in client/vercel.json the browser stays on one origin, so
+      # CORS is not exercised — this is here as a fallback. Set it to your Vercel
+      # URL, e.g. https://buddyscript.vercel.app
+      - key: CLIENT_ORIGIN
+        sync: false
+
+    # Uploaded images are written to disk. Render's free tier filesystem is
+    # EPHEMERAL: uploads survive while the instance is up, but are wiped on every
+    # redeploy and on the free tier's idle spin-down. Uncomment this disk (a paid
+    # feature) to persist them, or move uploads to object storage (S3/Cloudinary).
+    #
+    # disk:
+    #   name: uploads
+    #   mountPath: /opt/render/project/src/server/uploads
+    #   sizeGB: 1
