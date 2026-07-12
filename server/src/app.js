@@ -63,6 +63,13 @@ export function createApp() {
     res.json({ success: true, status: 'ok', uptime: process.uptime() })
   );
 
+  // This is an API, so there is nothing to render at the root — but a bare 404
+  // there reads as "the deployment is broken" to anyone who opens the URL in a
+  // browser. Say what this host is instead.
+  app.get('/', (_req, res) =>
+    res.json({ success: true, service: 'buddyscript-api', health: '/api/health' })
+  );
+
   app.use('/api/auth', authRoutes);
   app.use('/api/posts', postRoutes);
   app.use('/api/comments', commentRoutes);
