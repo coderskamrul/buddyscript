@@ -33,6 +33,20 @@ services:
       - key: JWT_REFRESH_SECRET
         sync: false
 
+      # Cloudinary — post images are uploaded here rather than to the container's
+      # disk. The API secret is a credential, so it is set in the dashboard too;
+      # the cloud name is not (it is in every delivery URL) but is kept alongside
+      # it so all three are configured in one place.
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+
+      - key: CLOUDINARY_FOLDER
+        value: buddyscript/posts
+
       - key: MONGODB_DB
         value: buddyscript
       - key: JWT_EXPIRY
@@ -47,12 +61,6 @@ services:
       - key: CLIENT_ORIGIN
         sync: false
 
-    # Uploaded images are written to disk. Render's free tier filesystem is
-    # EPHEMERAL: uploads survive while the instance is up, but are wiped on every
-    # redeploy and on the free tier's idle spin-down. Uncomment this disk (a paid
-    # feature) to persist them, or move uploads to object storage (S3/Cloudinary).
-    #
-    # disk:
-    #   name: uploads
-    #   mountPath: /opt/render/project/src/server/uploads
-    #   sizeGB: 1
+    # No disk is needed. Post images go to Cloudinary, so nothing durable is kept
+    # on this container's filesystem — which is what makes Render's ephemeral
+    # free-tier disk (wiped on every redeploy and on idle spin-down) a non-issue.

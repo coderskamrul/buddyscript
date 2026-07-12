@@ -28,10 +28,19 @@ export const env = {
 
   clientOrigin: process.env.CLIENT_ORIGIN || 'http://localhost:5173',
 
-  // Overridable so a host can point uploads at a mounted persistent disk
-  // (Render/Railway volumes) instead of the ephemeral container filesystem.
-  uploadDir: process.env.UPLOAD_DIR
+  cloudinary: {
+    cloudName: required('CLOUDINARY_CLOUD_NAME'),
+    apiKey: required('CLOUDINARY_API_KEY'),
+    apiSecret: required('CLOUDINARY_API_SECRET'),
+    // Every post image lands in this one folder, which is what lets the database
+    // store a bare file name instead of a path or a URL.
+    folder: process.env.CLOUDINARY_FOLDER || 'buddyscript/posts',
+  },
+  maxUploadBytes: 5 * 1024 * 1024,
+
+  // Post images now go to Cloudinary. This directory is only still served so
+  // that posts uploaded before that move keep rendering; nothing writes to it.
+  legacyUploadDir: process.env.UPLOAD_DIR
     ? path.resolve(process.env.UPLOAD_DIR)
     : path.resolve(__dirname, '../../uploads'),
-  maxUploadBytes: 5 * 1024 * 1024,
 };

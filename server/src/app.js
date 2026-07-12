@@ -24,7 +24,7 @@ export function createApp() {
 
   app.use(
     helmet({
-      // Uploads are served from this origin and embedded by the client on
+      // Legacy uploads are served from this origin and embedded by the client on
       // another (5173 in dev); the default same-origin policy would block them.
       crossOriginResourcePolicy: { policy: 'cross-origin' },
     })
@@ -45,13 +45,16 @@ export function createApp() {
   if (!env.isProd) app.use(morgan('dev'));
   app.use(globalLimiter);
 
+  // New post images go to Cloudinary and are served from its CDN — nothing writes
+  // here any more. This mount stays only so that posts created before that move
+  // (and the one the seed script creates) don't turn into broken images.
   app.use(
     '/uploads',
-    express.static(env.uploadDir, {
+    express.static(env.legacyUploadDir, {
       maxAge: '7d',
       immutable: true,
-      // Uploads are user-controlled bytes. Forcing a download instead of letting
-      // the browser sniff and render them defuses stored-XSS via a crafted file.
+      // These are user-controlled bytes. Forbidding the browser to sniff and
+      // render them defuses stored-XSS via a crafted file.
       setHeaders: (res) => res.setHeader('X-Content-Type-Options', 'nosniff'),
     })
   );

@@ -3,6 +3,14 @@ import react from '@vitejs/plugin-react';
 
 export default defineConfig({
   plugins: [react()],
+
+  // Read the repository-root .env, the same file the server reads, so the
+  // Cloudinary cloud name cannot drift between the two. Only `VITE_`-prefixed
+  // keys are ever exposed to the bundle — the API secret next to them in that
+  // file stays server-side. (On Vercel the value comes from the dashboard
+  // instead, where there is no file to point at.)
+  envDir: '..',
+
   server: {
     port: 5173,
     // Proxying in dev means the browser talks to a single origin, so the

@@ -1,39 +1,23 @@
 import multer from 'multer';
-import crypto from 'node:crypto';
-import path from 'node:path';
-import fs from 'node:fs';
 import { env } from '../config/env.js';
 import { ApiError } from '../utils/ApiError.js';
 
-fs.mkdirSync(env.uploadDir, { recursive: true });
-
-const ALLOWED = new Map([
-  ['image/jpeg', '.jpg'],
-  ['image/png', '.png'],
-  ['image/webp', '.webp'],
-  ['image/gif', '.gif'],
-]);
-
-const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, env.uploadDir),
-  filename: (_req, file, cb) => {
-    // The client's filename is never trusted: it can carry path traversal
-    // ("../../server.js") or a double extension ("evil.php.png"). We discard it
-    // and mint a random name with an extension derived from the allowlist.
-    const ext = ALLOWED.get(file.mimetype) || '';
-    cb(null, `${Date.now()}-${crypto.randomBytes(8).toString('hex')}${ext}`);
-  },
-});
+const ALLOWED = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
 
 export const uploadImage = multer({
-  storage,
+  // Memory, not disk. The bytes are on their way to Cloudinary, so staging them
+  // on the container's filesystem first would mean a temp file to write, read
+  // back and then remember to delete — for a file we never wanted locally. The
+  // 5MB cap below is what keeps the buffer bounded.
+  storage: multer.memoryStorage(),
   limits: { fileSize: env.maxUploadBytes, files: 1 },
   fileFilter: (_req, file, cb) => {
+    // A courtesy check on a client-supplied header: it rejects the honest
+    // mistake early, before we spend an upload on it. The control that actually
+    // holds is Cloudinary's `resource_type: 'image'`, which decodes the bytes.
     if (!ALLOWED.has(file.mimetype)) {
       return cb(ApiError.badRequest('Only JPG, PNG, WEBP or GIF images are allowed.'));
     }
     return cb(null, true);
   },
 }).single('image');
-
-export const publicUrlFor = (file) => (file ? `/uploads/${path.basename(file.filename)}` : null);

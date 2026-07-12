@@ -4,6 +4,7 @@ import { useToggleLike } from '../../hooks/useLike';
 import { useDeletePost, useUpdatePost } from '../../hooks/useFeed';
 import { useToast } from '../ui/Toast';
 import { avatarFor, cn, compactCount, timeAgo } from '../../utils/format';
+import { cloudinarySrcSet } from '../../utils/cloudinary';
 import CommentThread from './CommentThread';
 import LikersModal from './LikersModal';
 import VisibilitySelect from './VisibilitySelect';
@@ -262,7 +263,14 @@ function PostCard({ post, scope }) {
             {post.image ? (
               <div className="_feed_inner_timeline_image">
                 <img
+                  // `src` is the URL the server built, and is what a legacy post
+                  // or an unconfigured cloud name falls back to. When we do have
+                  // the Cloudinary id, `srcSet` + `sizes` let the browser fetch
+                  // the one width it will actually paint — a phone takes the
+                  // 400px file, a retina desktop the 1200px one.
                   src={post.image}
+                  srcSet={cloudinarySrcSet(post.imageId)}
+                  sizes="(max-width: 767px) 100vw, 636px"
                   alt=""
                   className="_time_img"
                   // Feed images below the fold are the single biggest payload on

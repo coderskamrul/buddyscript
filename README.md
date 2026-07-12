@@ -59,14 +59,11 @@ JWT_REFRESH_SECRET   # ...and a different one
 Before deploying, open [`client/vercel.json`](client/vercel.json) and replace both
 `https://REPLACE-ME.onrender.com` hosts with your Render URL.
 
-### Two caveats worth knowing up front
+Set the three `CLOUDINARY_*` values in the Render dashboard as well — the server
+refuses to boot without them (see [Images](#images) below).
 
-- **Uploaded images do not survive a redeploy.** Render's free tier has an
-  ephemeral filesystem, so `server/uploads` is wiped on every deploy and on
-  free-tier idle spin-down. Text posts are fine (they're in MongoDB); images
-  vanish. Fix it by attaching a persistent disk (the commented-out `disk:` block
-  in `render.yaml`, a paid feature) and pointing `UPLOAD_DIR` at it — or by moving
-  uploads to S3/Cloudinary, which is the right answer at any real scale anyway.
+### One caveat worth knowing up front
+
 - **Render's free tier sleeps** after inactivity, so the first request after an
   idle period takes ~30s to wake the container.
 
@@ -137,13 +134,16 @@ identical rendering).
 Four collections. Posts, comments and likes are kept **separate** rather than
 embedding likes/comments inside a post document.
 
-```
+```text
 users     { firstName, lastName, email (unique), password (bcrypt), sessions[] }
 posts     { author→users, content, image, visibility, likeCount, commentCount }
 comments  { post→posts, author→users, parent→comments|null, content,
             likeCount, replyCount }
 likes     { user→users, targetType: 'post'|'comment', target }
 ```
+
+`posts.image` holds a **Cloudinary file name and nothing else** — see
+[Images](#images).
 
 **Why likes are their own collection.** An embedded `likes: []` array on a post
 grows without bound — a viral post has millions of likers, which blows past
@@ -167,6 +167,58 @@ satisfies both the filter and the ordering from the index alone.
 
 ---
 
+## Images
+
+Post images go to **Cloudinary** and are served from its CDN. The API server
+never writes them to its own disk, which is what removes the old "uploads are
+wiped on every redeploy" failure mode — the container is now stateless.
+
+**The database stores only the file name.** Not a URL, not a path:
+
+```text
+posts.image = "l2d1bnbmsxv3yz5qpbfx"        // 20 bytes
+              ↓  resolved against CLOUDINARY_FOLDER + CLOUDINARY_CLOUD_NAME
+https://res.cloudinary.com/<cloud>/image/upload/f_auto,q_auto,c_limit,w_1200/buddyscript/posts/l2d1bnbmsxv3yz5qpbfx
+```
+
+The host, the folder and the transformation are *configuration*, not data. Baking
+them into every row would mean that changing CDN, renaming the folder or retuning
+the delivery transformation becomes a migration over every post ever written —
+and would store the same ~100-byte prefix a million times over. Keeping the row
+down to the name makes all three a config edit.
+
+**Client and server derive that URL from the same formula**, in
+[`server/src/services/postImage.js`](server/src/services/postImage.js) and its
+mirror [`client/src/utils/cloudinary.js`](client/src/utils/cloudinary.js). They
+must agree, so a change to one belongs in the other. The API therefore sends both:
+
+| Field | | |
+| --- | --- | --- |
+| `image` | a ready-to-use URL | so a client needs no Cloudinary knowledge to render a post |
+| `imageId` | the bare file name | so a client that *has* that knowledge can ask for its own width |
+
+That second field is what lets the browser build a `srcSet`. Only the browser
+knows its viewport and pixel density, so only the browser can pick the right file:
+
+- **On ingest**, the image is downscaled once to fit 1600px. A 12MP phone photo is
+  never stored at 12MP, so we pay for pixels nobody will see exactly zero times
+  rather than on every read. Re-encoding also strips EXIF — which carries the GPS
+  coordinates the photo was taken at.
+- **On delivery**, `f_auto` negotiates the format and `q_auto` the quality. The
+  seed's 1194 KB PNG reaches a modern browser as **28 KB of WebP** at the width
+  the feed actually paints it.
+- `c_limit` never upscales past the stored asset, and names are unique and never
+  overwritten — so a URL always resolves to the same bytes, and can be cached
+  immutably and forever. That is why there is no version component in it.
+
+**Posts written before this change still render.** The seed's
+`/assets/images/timeline_img.png` and any older `/uploads/…` row hold a *path*,
+and a Cloudinary name never starts with `/` — so the leading slash is the
+discriminator. Those pass through untouched (and get no `imageId`, so no
+`srcSet`). `/uploads` is still served read-only for them; nothing writes there.
+
+---
+
 ## Designing for millions of posts and reads
 
 **Cursor pagination, never `skip`.** `skip(n)` makes the server walk and discard
@@ -187,10 +239,15 @@ per post — see `server/src/utils/likeState.js`.
 **Lazy thread loading.** Comments load only when a thread is opened, and replies
 only when expanded. A feed page costs one request, not eleven.
 
+**Images never touch the API server.** They stream from multer's memory buffer
+straight to Cloudinary and are read back from its CDN, so serving a viral post's
+image costs the Express process nothing — no disk, no bandwidth, no state.
+
 **Client-side.** `@tanstack/react-query` caches and dedupes; likes are optimistic
 with rollback; `PostCard` is memoized so liking one post doesn't re-render fifty;
 infinite scroll uses `IntersectionObserver` (not a scroll handler); feed images
-are `loading="lazy"`.
+are `loading="lazy"` and carry a `srcSet` so a phone downloads the 400px file
+rather than the 1200px one.
 
 ---
 
@@ -213,9 +270,14 @@ are `loading="lazy"`.
 - **Private posts are filtered in the database query**, not after the fact, and a
   private post you don't own returns *404, not 403* — a 403 would confirm it
   exists. This holds for reading it, commenting on it, and liking it.
-- **Uploads** — mimetype allowlist, 5 MB cap, client filename discarded (it can
-  carry `../` traversal or a double extension) and replaced with a random name;
-  served with `X-Content-Type-Options: nosniff`.
+- **Uploads** — 5 MB cap and a mimetype allowlist, but the mimetype is a
+  *client-supplied header*, so the control that actually holds is Cloudinary's
+  `resource_type: 'image'`, which decodes the bytes and rejects anything that
+  isn't a real image. The client's filename is discarded (it can carry `../`
+  traversal or a double extension `evil.php.png`) — Cloudinary mints a random
+  name, and `overwrite: false` means one upload can never clobber another's
+  asset. Images are served from Cloudinary's own domain, so a crafted file could
+  not reach same-origin script even if it got through.
 - Plus `helmet`, CORS with an origin allowlist, and rate limits (tight on
   `/auth`, looser on writes).
 

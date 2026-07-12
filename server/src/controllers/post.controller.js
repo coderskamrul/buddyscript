@@ -1,5 +1,3 @@
-import fs from 'node:fs/promises';
-import path from 'node:path';
 import { Post, VISIBILITY } from '../models/Post.js';
 import { Comment } from '../models/Comment.js';
 import { Like, TARGET_TYPE } from '../models/Like.js';
@@ -8,13 +6,26 @@ import { asyncHandler } from '../utils/asyncHandler.js';
 import { requireOwnership } from '../middleware/auth.js';
 import { buildPage, cursorFilter, parseLimit } from '../utils/pagination.js';
 import { AUTHOR_FIELDS, likePreviews, likedTargetIds, shapeAuthor } from '../utils/likeState.js';
-import { publicUrlFor } from '../middleware/upload.js';
-import { env } from '../config/env.js';
+import {
+  destroyPostImage,
+  isLegacyPath,
+  postImageUrl,
+  uploadPostImage,
+} from '../services/postImage.js';
 
 const shapePost = (post, likedIds, viewerId, previews = new Map()) => ({
   id: post._id,
+
   content: post.content,
-  image: post.image,
+
+  // The row holds a bare Cloudinary file name. `image` is that name rendered as
+  // a ready-to-use URL, so a client needs no Cloudinary knowledge to show a
+  // post; `imageId` is the name itself, so a client that *does* have that
+  // knowledge can ask for a size of its own (the browser builds a srcset from
+  // it). Legacy rows still hold a path, and have no id to hand out.
+  image: postImageUrl(post.image),
+  imageId: isLegacyPath(post.image) ? null : post.image,
+
   visibility: post.visibility,
   author: shapeAuthor(post.author),
   likeCount: post.likeCount,
@@ -100,20 +111,32 @@ export const getPost = asyncHandler(async (req, res) => {
 
 export const createPost = asyncHandler(async (req, res) => {
   const { content = '', visibility = VISIBILITY.PUBLIC } = req.body;
-  const image = publicUrlFor(req.file);
 
-  if (!content.trim() && !image) {
+  // Checked before the upload, not after: a post with neither text nor an image
+  // is going to be rejected either way, and this way we don't pay to push 5MB to
+  // Cloudinary first — nor leave it there once we do.
+  if (!content.trim() && !req.file) {
     throw ApiError.badRequest('Write something or add an image before posting.');
   }
 
-  const created = await Post.create({
-    content: content.trim(),
-    image,
-    visibility,
-    // The author is always the authenticated user. It is never read from the
-    // request body, so a client cannot post as somebody else.
-    author: req.user._id,
-  });
+  const image = req.file ? await uploadPostImage(req.file) : null;
+
+  let created;
+  try {
+    created = await Post.create({
+      content: content.trim(),
+      image,
+      visibility,
+      // The author is always the authenticated user. It is never read from the
+      // request body, so a client cannot post as somebody else.
+      author: req.user._id,
+    });
+  } catch (error) {
+    // The image is already in Cloudinary. Without the row that points at it,
+    // nothing can ever reference it or clean it up — so undo the upload.
+    await destroyPostImage(image);
+    throw error;
+  }
 
   const post = await Post.findById(created._id).populate('author', AUTHOR_FIELDS).lean();
 
@@ -129,20 +152,32 @@ export const updatePost = asyncHandler(async (req, res) => {
   requireOwnership(post, req.user._id);
 
   const { content, visibility, removeImage } = req.body;
-
-  if (content !== undefined) post.content = content.trim();
-  if (visibility !== undefined) post.visibility = visibility;
-
   const previousImage = post.image;
-  if (req.file) post.image = publicUrlFor(req.file);
-  else if (removeImage) post.image = null;
 
-  if (!post.content && !post.image) {
+  // Resolve the post's *final* state first and validate that, so an edit that
+  // would empty the post is rejected before the upload rather than after it.
+  const nextContent = content !== undefined ? content.trim() : post.content;
+  const willHaveImage = req.file ? true : !(removeImage || !post.image);
+
+  if (!nextContent && !willHaveImage) {
     throw ApiError.badRequest('A post needs either text or an image.');
   }
 
-  await post.save();
-  if (previousImage && previousImage !== post.image) await removeUpload(previousImage);
+  post.content = nextContent;
+  if (visibility !== undefined) post.visibility = visibility;
+  if (req.file) post.image = await uploadPostImage(req.file);
+  else if (removeImage) post.image = null;
+
+  try {
+    await post.save();
+  } catch (error) {
+    if (post.image !== previousImage) await destroyPostImage(post.image);
+    throw error;
+  }
+
+  // Only once the row no longer points at it — otherwise a failed save would
+  // leave a post referencing an image that had already been deleted.
+  if (previousImage !== post.image) await destroyPostImage(previousImage);
 
   const populated = await Post.findById(post._id).populate('author', AUTHOR_FIELDS).lean();
   const [liked, previews] = await Promise.all([
@@ -179,18 +214,7 @@ export const deletePost = asyncHandler(async (req, res) => {
     }),
   ]);
 
-  if (post.image) await removeUpload(post.image);
+  await destroyPostImage(post.image);
 
   res.json({ success: true, message: 'Post deleted.' });
 });
-
-async function removeUpload(publicPath) {
-  try {
-    // basename() keeps a crafted value like "/uploads/../../src/server.js" from
-    // escaping the upload directory.
-    const file = path.join(env.uploadDir, path.basename(publicPath));
-    await fs.unlink(file);
-  } catch {
-    // A missing file is not worth failing the request over.
-  }
-}
