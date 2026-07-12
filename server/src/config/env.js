@@ -18,6 +18,10 @@ export const env = {
   nodeEnv: process.env.NODE_ENV || 'development',
   isProd: process.env.NODE_ENV === 'production',
 
+  // Vercel sets this in every serverless invocation. It changes what a "good"
+  // connection pool looks like — see config/db.js.
+  isServerless: Boolean(process.env.VERCEL),
+
   mongoUri: required('MONGODB_URI'),
   mongoDb: process.env.MONGODB_DB || 'buddyscript',
 

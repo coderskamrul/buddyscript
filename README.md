@@ -35,37 +35,64 @@ serves them at `/assets/*` in both dev and production.
 
 ---
 
-## Deploying (Vercel + Render)
+## Deploying
 
-The frontend goes to Vercel, the API to Render. They are wired together with a
-**Vercel rewrite**, not with CORS — and that choice matters:
+Two Vercel projects from one repo — the frontend and the API — wired together
+with a **Vercel rewrite**, not with CORS. That choice is load-bearing:
 
-> Vercel proxies `/api/*` and `/uploads/*` through to the API, so the **browser
-> only ever talks to one origin**. The httpOnly session cookies therefore stay
+> The frontend proxies `/api/*` through to the API project, so the **browser only
+> ever talks to one origin**. The httpOnly session cookies therefore stay
 > first-party and `SameSite=Lax` keeps working. If the React app called the API's
-> own domain directly, those cookies would be cross-site and the browser would
-> silently drop them — every request would 401.
+> own `*.vercel.app` domain directly, those cookies would be cross-site and the
+> browser would silently drop them — every request would 401. So the API's domain
+> is something only Vercel's edge ever dials, never the browser.
 
-**1. API → Render.** Push the repo, then Render > New > Blueprint (it reads
-[`render.yaml`](render.yaml)). Set the secrets it asks for in the dashboard:
+**1. API.** New project, **Root Directory = `server`**. It picks up
+[`server/vercel.json`](server/vercel.json), which routes every path to the one
+function in [`server/api/index.js`](server/api/index.js).
+
+Set all of these in the project's Environment settings — the server throws on the
+first missing one and the deploy fails before it can serve anything:
 
 ```bash
-MONGODB_URI          # your Atlas connection string
-JWT_SECRET           # node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
-JWT_REFRESH_SECRET   # ...and a different one
+MONGODB_URI            # your Atlas connection string
+MONGODB_DB             # buddyscript
+JWT_SECRET             # node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
+JWT_REFRESH_SECRET     # ...and a different one
+CLIENT_ORIGIN          # https://<your-frontend>.vercel.app
+CLOUDINARY_CLOUD_NAME  # \
+CLOUDINARY_API_KEY     #  } from cloudinary.com > Dashboard
+CLOUDINARY_API_SECRET  # /
 ```
 
-**2. Frontend → Vercel.** Import the repo and set **Root Directory = `client`**.
-Before deploying, open [`client/vercel.json`](client/vercel.json) and replace both
-`https://REPLACE-ME.onrender.com` hosts with your Render URL.
+Atlas also has an IP allowlist, and serverless functions have no fixed egress IP.
+Allow `0.0.0.0/0`, or nothing will connect.
 
-Set the three `CLOUDINARY_*` values in the Render dashboard as well — the server
-refuses to boot without them (see [Images](#images) below).
+**2. Frontend.** New project, **Root Directory = `client`**. Point the rewrite in
+[`client/vercel.json`](client/vercel.json) at the API project's domain.
 
-### One caveat worth knowing up front
+### Why the API needs its own entrypoint
 
-- **Render's free tier sleeps** after inactivity, so the first request after an
-  idle period takes ~30s to wake the container.
+A serverless function must default-export a handler. `src/app.js` exports a
+*factory*, and `src/server.js` calls `app.listen()` — neither is a handler, and
+pointing Vercel at either fails with *"the default export must be a function or
+server"*. `api/index.js` is the seam that adapts one to the other; nothing else
+about the app changes, and `npm run dev` still runs a normal long-lived server.
+
+The one thing serverless genuinely changes is the database. Many short-lived
+instances run side by side and each opens a pool of its own, so the pool is sized
+down (and the connection memoized across warm invocations) when `VERCEL` is set —
+see [`config/db.js`](server/src/config/db.js).
+
+### Caveats
+
+- **Rate limits are per-instance.** `express-rate-limit` counts in memory, and
+  serverless memory isn't shared, so the effective limit is looser than the
+  configured one. A real deployment wants a shared store (Redis/Upstash).
+- **Cold starts.** The first request after an idle period pays for the Mongo dial.
+- **Pre-Cloudinary `/uploads` images 404 in production.** `server/uploads` is
+  gitignored, so it was never deployed, and nothing writes to a serverless
+  filesystem anyway. Only posts made before the Cloudinary switch are affected.
 
 ### Rotate the credentials
 

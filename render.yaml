@@ -1,7 +1,11 @@
-# Render blueprint for the API. Push this file and Render can create the service
-# from it (New > Blueprint), or configure the same values by hand in the UI.
+# ALTERNATIVE deployment. The API currently ships to Vercel as a serverless
+# function (see server/vercel.json + server/api/index.js, and the Deploying
+# section of the README) — this blueprint is kept for running it on Render as a
+# long-lived container instead, which buys a shared in-memory rate limiter and no
+# cold starts. Nothing reads this file unless you point Render at it.
 #
-# The frontend is NOT here — it goes to Vercel (see client/vercel.json).
+# Render blueprint for the API: New > Blueprint, or configure the same values by
+# hand in the UI. The frontend is NOT here — it goes to Vercel.
 services:
   - type: web
     name: buddyscript-api

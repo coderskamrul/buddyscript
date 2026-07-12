@@ -6,11 +6,7 @@
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "https://REPLACE-ME.onrender.com/api/:path*"
-    },
-    {
-      "source": "/uploads/:path*",
-      "destination": "https://REPLACE-ME.onrender.com/uploads/:path*"
+      "destination": "https://buddyscript-3kcj.vercel.app/api/:path*"
     },
     {
       "source": "/(.*)",
