@@ -13,6 +13,7 @@
  */
 import { cloudinary } from '../config/cloudinary.js';
 import { env } from '../config/env.js';
+import { log } from '../config/logger.js';
 
 const { cloudName, folder } = env.cloudinary;
 
@@ -30,6 +31,15 @@ export const isLegacyPath = (image) => typeof image === 'string' && image.starts
  * c_limit — scale down to fit the requested width, never up past the original.
  */
 const DELIVERY = 'f_auto,q_auto,c_limit';
+
+/**
+ * The ladder the browser picks from in its `srcset`, and therefore exactly the
+ * set of variants the MEDIA WORKER pre-generates on upload (see
+ * queues/workers/media.worker.js). It must match the `WIDTHS` array in
+ * `client/src/utils/cloudinary.js` — a width in the client's srcset that the
+ * worker did not pre-render is a width the first viewer pays to generate.
+ */
+export const FEED_WIDTHS = [400, 600, 800, 1200];
 
 /** The widest image the feed will ever ask for; also the default `src`. */
 export const DEFAULT_WIDTH = 1200;
@@ -95,6 +105,6 @@ export async function destroyPostImage(image) {
     // The row is already gone and the user's request succeeded. An asset that
     // outlives it costs a few KB; failing the request here would cost the user
     // their delete.
-    console.error(`[cloudinary] could not delete "${image}":`, error.message);
+    log().error({ err: error, image }, 'cloudinary: could not delete asset');
   }
 }

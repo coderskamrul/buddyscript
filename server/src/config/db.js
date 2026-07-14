@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import { env } from './env.js';
+import { logger } from './logger.js';
 
 /**
  * Serverless runs many short-lived instances side by side, and each one that
@@ -35,9 +36,24 @@ export function connectDatabase() {
       ...POOL,
       serverSelectionTimeoutMS: 10000,
       socketTimeoutMS: 45000,
+
+      /**
+       * NEVER build indexes on boot in production.
+       *
+       * With `autoIndex` on (the Mongoose default), every model issues
+       * `createIndex` on every connection — so every container, on every deploy
+       * and every autoscale event, simultaneously asks Mongo to build indexes
+       * over the whole collection. At 50 documents that is free. At 50 million it
+       * is minutes of heavy I/O on the primary, triggered by the very traffic
+       * spike that caused the scale-out.
+       *
+       * Indexes are built once, deliberately, by `npm run indexes` as a deploy
+       * step. Locally, autoIndex stays on so a new model just works.
+       */
+      autoIndex: !env.isProd,
     });
 
-    console.log(`[db] connected to ${env.mongoDb}`);
+    logger.info({ db: env.mongoDb, autoIndex: !env.isProd }, 'mongo connected');
     return mongoose.connection;
   })().catch((error) => {
     // A failed dial must not be memoized, or every later request on this

@@ -3,13 +3,19 @@
 The supplied Login / Register / Feed HTML pages, rebuilt as a React + Tailwind
 application on an Express + MongoDB backend.
 
-```
+```text
 ├── client/          React 18 + Vite + Tailwind
-├── server/          Express + Mongoose (MongoDB Atlas)
+├── server/          Express + Mongoose (MongoDB Atlas) + Redis + BullMQ
 ├── legacy-html/     the original HTML, kept for reference
 ├── assets/          the original design assets (also copied to client/public)
+├── ARCHITECTURE.md  how this scales to millions of users, and why
 └── .env             config (already points at the provided Atlas cluster)
 ```
+
+> **📐 [ARCHITECTURE.md](ARCHITECTURE.md)** — the design document: request flow,
+> the Redis caching strategy, the queue architecture, fan-out on write vs. on
+> read, what happens when a user with a million followers posts, the indexing
+> strategy, horizontal scaling, and the trade-offs each of those cost.
 
 ## Running it
 
@@ -20,7 +26,7 @@ create it first:
 cp .env.example .env      # then fill in MONGODB_URI and the two JWT secrets
 ```
 
-Then, in two terminals from the repository root:
+Then, from the repository root:
 
 ```bash
 # 1. API  → http://localhost:5000
@@ -32,6 +38,35 @@ cd client && npm install && npm run dev
 
 The design's stylesheets and images live in `client/public/assets/`, so Vite
 serves them at `/assets/*` in both dev and production.
+
+### Redis and the background worker
+
+Redis powers the cache, the rate limiter, the materialized feed timelines and the
+job queues. **It is optional in development and required in production.**
+
+Without a `REDIS_URL` the app boots in **degraded mode** — the cache is a no-op,
+rate limits are per-process, and background jobs are dropped — and says so loudly
+at startup. That is fine for working on the UI, and nothing else.
+
+To run the real thing:
+
+```bash
+brew install redis && redis-server          # or: docker run -p 6379:6379 redis
+
+# then, in a THIRD terminal — the background workers are a separate process
+cd server && npm run worker:dev
+```
+
+The worker is what consumes the queues: feed fan-out, notifications, and image
+variant generation. Without it, posts and likes still work — the jobs simply queue
+up in Redis and drain the moment a worker appears.
+
+| Command | What it does |
+|---|---|
+| `npm run dev` | the API |
+| `npm run worker:dev` | the job consumers (fan-out, notifications, media) |
+| `npm run indexes` | build/sync MongoDB indexes — a **deploy step**, not a boot step |
+| `npm run seed` | seed the database |
 
 ---
 
@@ -248,6 +283,9 @@ discriminator. Those pass through untouched (and get no `imageId`, so no
 
 ## Designing for millions of posts and reads
 
+The full reasoning — with the trade-offs each choice cost — is in
+**[ARCHITECTURE.md](ARCHITECTURE.md)**. The short version:
+
 **Cursor pagination, never `skip`.** `skip(n)` makes the server walk and discard
 n documents, so page 50,000 of a million-post feed is a scan. An ObjectId encodes
 its creation time, so `_id < cursor` sorted by `_id: -1` is both a correct "older
@@ -255,16 +293,36 @@ than this" filter and an index range seek — page 50,000 costs the same as page
 It's also *stable*: posts created while you scroll can't shift items across a page
 boundary and show you the same post twice.
 
-**Denormalized counters.** `likeCount` / `commentCount` / `replyCount` live on the
-document and move by `$inc`. Rendering a feed of 10 posts must not fan out into
-10 `countDocuments()` calls.
+**Hybrid fan-out.** Posts by ordinary users are *pushed* into their followers'
+Redis timelines by a background worker; posts by users above the celebrity
+threshold are *pulled* and merged at read time. A user with a million followers
+therefore generates **zero** timeline writes when they post, and their post still
+reaches every feed. ([§4–5](ARCHITECTURE.md#5-the-1000000-follower-problem))
 
-**No N+1 on like state.** The like/unlike state for an entire page is resolved in
-*one* query (`{ user, targetType, target: { $in: ids } }`) rather than one query
-per post — see `server/src/utils/likeState.js`.
+**Redis cache, split by lifetime.** Feed pages cache ordered post *ids*; the post
+*bodies* are cached separately under `post:{id}`. So a post on ten thousand feeds
+is stored once, and editing it is a single `DEL`. Every cache call **fails open** —
+if Redis is down the site is slower, not broken. ([§6](ARCHITECTURE.md#6-redis-caching-strategy))
 
-**Lazy thread loading.** Comments load only when a thread is opened, and replies
-only when expanded. A feed page costs one request, not eleven.
+**Denormalized counters.** `likeCount` / `commentCount` / `replyCount` /
+`followerCount` live on the document and move by `$inc`, clamped at zero by the
+database itself. Rendering a feed of 10 posts must not fan out into 10
+`countDocuments()` calls.
+
+**No N+1 anywhere.** The like state for an entire page is resolved in *one*
+index-covered query (`{ user, targetType, target: { $in: ids } }`), and the liker
+previews for the page in *one* aggregation — not one query per post. See
+`server/src/repositories/like.repository.js`.
+
+**Heavy work is queued, never done in the request.** Fan-out, notifications and
+image-variant generation run in a separate worker process (`npm run worker`), so
+posting takes ~50ms whether you have three followers or three million.
+([§7](ARCHITECTURE.md#7-queue-architecture))
+
+**Stateless API.** No sessions, rate-limit counters, cached feeds or in-flight jobs
+live in an Express process — they are all in Redis. Any container can serve any
+request, so scaling out means adding containers.
+([§9](ARCHITECTURE.md#9-horizontal-scaling))
 
 **Images never touch the API server.** They stream from multer's memory buffer
 straight to Cloudinary and are read back from its CDN, so serving a viral post's
@@ -334,14 +392,27 @@ All routes require a session except `register` / `login` / `refresh`.
 | POST | `/api/auth/refresh` | rotates the refresh token |
 | POST | `/api/auth/logout` | revokes the session server-side |
 | GET | `/api/auth/me` | |
-| GET | `/api/posts` | `?cursor&limit&scope=all\|mine` |
+| GET | `/api/posts` | the **discovery** feed: `?cursor&limit&scope=all\|mine` |
 | POST | `/api/posts` | multipart: `content`, `visibility`, `image` |
 | PATCH / DELETE | `/api/posts/:id` | author only |
+| GET | `/api/feed` | the **home timeline** — hybrid fan-out, `?cursor&limit` |
+| POST / DELETE | `/api/follows/:id` | follow / unfollow a user |
+| GET | `/api/follows/:id/followers` | paginated |
 | GET / POST | `/api/posts/:id/comments` | `parentId` on POST makes it a reply |
 | GET | `/api/comments/:id/replies` | |
 | DELETE | `/api/comments/:id` | comment author, or the post's author |
 | POST | `/api/likes/toggle` | `{ targetType, targetId }` — posts and comments |
 | GET | `/api/likes` | `?targetType&targetId` — who liked it, paginated |
+
+**Two feeds, deliberately.** `/api/posts` is the global discovery feed (everything
+public, newest first) and is what the React client renders — its contract is
+unchanged by the refactor. `/api/feed` is the follower-graph home timeline, built
+by the hybrid push/pull fan-out described in
+[ARCHITECTURE.md §4](ARCHITECTURE.md#4-feed-generation-fan-out-on-write-vs-fan-out-on-read).
+They answer genuinely different questions ("what is happening" vs. "what are the
+people I follow saying"), and every social product ships both. The response shape
+is identical, so the client's `useFeed` hook can point at either by changing one
+URL.
 
 ### Notes
 

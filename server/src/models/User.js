@@ -18,6 +18,20 @@ const userSchema = new mongoose.Schema(
     // Never selected by default so a stray `User.find()` can't leak hashes.
     password: { type: String, required: true, select: false },
     avatar: { type: String, default: null },
+
+    /**
+     * Denormalized graph counters, kept in sync with $inc on every follow/unfollow.
+     *
+     * `followerCount` is not a vanity field — it is a routing decision. Every
+     * post creation has to answer "push this to followers, or leave it to be
+     * pulled?" (see env.feed.celebrityThreshold), and that question must be
+     * answered from ONE cheap document read. Counting the Follow collection
+     * instead would mean a count() over a million edges on the write path of
+     * every post.
+     */
+    followerCount: { type: Number, default: 0, min: 0 },
+    followingCount: { type: Number, default: 0, min: 0 },
+
     // Hashed refresh tokens, one per active device. Rotated on every refresh.
     sessions: {
       type: [

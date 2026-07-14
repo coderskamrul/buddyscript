@@ -3,24 +3,46 @@ import helmet from 'helmet';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import compression from 'compression';
-import morgan from 'morgan';
 
 import { env } from './config/env.js';
+import { isRedisReady } from './config/redis.js';
 import { globalLimiter } from './middleware/rateLimit.js';
+import { requestContext, requestLogger } from './middleware/requestLogger.js';
 import { errorHandler, notFound } from './middleware/error.js';
 import authRoutes from './routes/auth.routes.js';
 import postRoutes from './routes/post.routes.js';
 import commentRoutes from './routes/comment.routes.js';
 import likeRoutes from './routes/like.routes.js';
+import feedRoutes from './routes/feed.routes.js';
+import followRoutes from './routes/follow.routes.js';
 
+/**
+ * THE STATELESS EXPRESS APP.
+ *
+ * Nothing that matters is kept in this process. No session store, no rate-limit
+ * counters, no in-flight jobs, no uploaded bytes on disk, no cached feed in a
+ * module-level Map. Every one of those lives in Mongo, in Redis, or in Cloudinary.
+ *
+ * That is the whole precondition for horizontal scaling, and it is a property you
+ * have to keep rather than one you can add later: it means ANY of N containers can
+ * serve ANY request (no sticky sessions), a container can be killed mid-deploy
+ * without losing work, and the way to handle 10× the traffic is to run 10× the
+ * containers. A single `Map` cached at module scope in this file — the most
+ * natural optimisation in the world — would silently break all three.
+ */
 export function createApp() {
   const app = express();
 
-  // Behind a proxy (Heroku/Nginx/Render) req.ip is the proxy's address unless we
-  // trust the forwarding header — and the rate limiter keys on req.ip, so
-  // without this every user would share one bucket.
+  // Behind a proxy (Render/Nginx/an ALB) `req.ip` is the PROXY's address unless we
+  // trust the forwarding header — and the rate limiter keys on it, so without this
+  // every user on Earth would share one bucket.
   app.set('trust proxy', 1);
   app.disable('x-powered-by');
+
+  // First, so that every line logged by everything below it — including a request
+  // rejected by the rate limiter — carries the request id.
+  app.use(requestLogger);
+  app.use(requestContext);
 
   app.use(
     helmet({
@@ -42,7 +64,6 @@ export function createApp() {
   app.use(express.json({ limit: '100kb' }));
   app.use(express.urlencoded({ extended: true, limit: '100kb' }));
   app.use(cookieParser());
-  if (!env.isProd) app.use(morgan('dev'));
   app.use(globalLimiter);
 
   // New post images go to Cloudinary and are served from its CDN — nothing writes
@@ -59,8 +80,20 @@ export function createApp() {
     })
   );
 
+  /**
+   * The load balancer's health check. It reports Redis's state but does NOT go
+   * unhealthy when Redis is down, and that distinction is deliberate: the app
+   * degrades without Redis (slower — it reads Mongo) rather than failing. A health
+   * check that fails on a Redis blip would have the load balancer pull EVERY
+   * container out of rotation at once, converting a cache outage into a total one.
+   */
   app.get('/api/health', (_req, res) =>
-    res.json({ success: true, status: 'ok', uptime: process.uptime() })
+    res.json({
+      success: true,
+      status: 'ok',
+      uptime: process.uptime(),
+      redis: env.redis.enabled ? (isRedisReady() ? 'ready' : 'degraded') : 'disabled',
+    })
   );
 
   // This is an API, so there is nothing to render at the root — but a bare 404
@@ -71,7 +104,11 @@ export function createApp() {
   );
 
   app.use('/api/auth', authRoutes);
+  // The global discovery feed. Unchanged — the existing client uses it as-is.
   app.use('/api/posts', postRoutes);
+  // The follower-graph home timeline (hybrid fan-out).
+  app.use('/api/feed', feedRoutes);
+  app.use('/api/follows', followRoutes);
   app.use('/api/comments', commentRoutes);
   app.use('/api/likes', likeRoutes);
 

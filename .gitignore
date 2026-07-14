@@ -51,3 +51,6 @@ coverage/
 .cache/
 .temp/
 .tmp/
+
+# Redis snapshot, if a local redis-server is ever run from a project dir
+dump.rdb

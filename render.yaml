@@ -1,24 +1,48 @@
-# ALTERNATIVE deployment. The API currently ships to Vercel as a serverless
-# function (see server/vercel.json + server/api/index.js, and the Deploying
-# section of the README) — this blueprint is kept for running it on Render as a
-# long-lived container instead, which buys a shared in-memory rate limiter and no
-# cold starts. Nothing reads this file unless you point Render at it.
+# Render blueprint: New > Blueprint, or configure the same values by hand in the UI.
+# The frontend is NOT here — it goes to Vercel.
 #
-# Render blueprint for the API: New > Blueprint, or configure the same values by
-# hand in the UI. The frontend is NOT here — it goes to Vercel.
+# THREE components, and that split IS the architecture (see ARCHITECTURE.md):
+#
+#   1. buddyscript-api     — the stateless Express API. Scale by raising numInstances.
+#   2. buddyscript-worker  — the BullMQ job consumers, a SEPARATE process. Scaled
+#                            independently, because a traffic spike needs more API
+#                            containers while a celebrity posting needs more fan-out
+#                            workers — and running them in one process means you
+#                            cannot buy one without buying the other.
+#   3. buddyscript-redis   — cache, rate-limit counters, feed timelines, job queues.
+#
+# NOTE ON VERCEL. The API also ships to Vercel as a serverless function
+# (server/vercel.json). Serverless has no long-lived process to run workers in, so
+# there the queues have no consumer: fan-out and notification jobs would enqueue
+# and never drain. Deploying THIS blueprint is what makes the background
+# architecture actually run.
+
 services:
+  # ── The API ────────────────────────────────────────────────────────────────
   - type: web
     name: buddyscript-api
     runtime: node
-    plan: free
+    plan: starter
     region: oregon
 
-    # The Express app lives in /server, so build and start from there.
     rootDir: server
     buildCommand: npm ci
-    startCommand: npm start
 
+    # Indexes are built ONCE, here — not on every container boot. With Mongoose's
+    # autoIndex on, every instance would rebuild them on every deploy and every
+    # autoscale event: invisible at 50 documents, minutes of heavy I/O on the
+    # primary at 50 million. autoIndex is off in production (config/db.js), and
+    # this is what replaces it.
+    preDeployCommand: npm run indexes
+
+    startCommand: npm start
     healthCheckPath: /api/health
+
+    # The API is stateless — no sessions, no rate-limit counters, no cached feed,
+    # no in-flight jobs, nothing on disk. Any container can serve any request, so
+    # this number can be raised freely and there are no sticky sessions to
+    # configure.
+    numInstances: 2
 
     envVars:
       - key: NODE_ENV
@@ -26,21 +50,72 @@ services:
 
       # Render injects PORT; the server already reads it from the environment.
 
-      # Set these in the Render dashboard (marked sync:false so they are NOT
-      # committed here). MONGODB_URI is your Atlas connection string, and the two
-      # JWT secrets must be fresh random values — generate each with:
-      #   node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
+      # Set in the dashboard (sync:false => never committed here).
       - key: MONGODB_URI
         sync: false
       - key: JWT_SECRET
         sync: false
       - key: JWT_REFRESH_SECRET
         sync: false
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+      - key: CLIENT_ORIGIN
+        sync: false
 
-      # Cloudinary — post images are uploaded here rather than to the container's
-      # disk. The API secret is a credential, so it is set in the dashboard too;
-      # the cloud name is not (it is in every delivery URL) but is kept alongside
-      # it so all three are configured in one place.
+      # Wired straight from the Redis instance below — no connection string
+      # copy-pasted between dashboards, and no chance of the API and the worker
+      # pointing at different Redises.
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: buddyscript-redis
+          property: connectionString
+
+      - key: CLOUDINARY_FOLDER
+        value: buddyscript/posts
+      - key: MONGODB_DB
+        value: buddyscript
+      - key: JWT_EXPIRY
+        value: 24h
+      - key: JWT_REFRESH_EXPIRY
+        value: 30d
+      # JSON logs in production — that is what a log aggregator can parse.
+      - key: LOG_PRETTY
+        value: 'false'
+
+    # No disk is declared. Post images go to Cloudinary, so nothing durable lives
+    # on this container's filesystem — which is what makes an ephemeral disk a
+    # non-issue, and what lets numInstances be greater than 1 at all.
+
+  # ── The background workers ─────────────────────────────────────────────────
+  - type: worker
+    name: buddyscript-worker
+    runtime: node
+    plan: starter
+    region: oregon
+
+    rootDir: server
+    buildCommand: npm ci
+    startCommand: npm run worker
+
+    # Scale this on FAN-OUT load, not on HTTP traffic — they are different curves.
+    # One celebrity with 500k followers generates hundreds of batch jobs without a
+    # single extra HTTP request. Workers coordinate through Redis and need to know
+    # nothing about each other, so adding one simply adds throughput.
+    numInstances: 1
+
+    envVars:
+      - key: NODE_ENV
+        value: production
+
+      # Same Mongo, same Redis as the API. It does NOT listen on a port — see
+      # src/worker.js.
+      - key: MONGODB_URI
+        sync: false
       - key: CLOUDINARY_CLOUD_NAME
         sync: false
       - key: CLOUDINARY_API_KEY
@@ -48,23 +123,48 @@ services:
       - key: CLOUDINARY_API_SECRET
         sync: false
 
-      - key: CLOUDINARY_FOLDER
-        value: buddyscript/posts
-
-      - key: MONGODB_DB
-        value: buddyscript
-      - key: JWT_EXPIRY
-        value: 24h
-      - key: JWT_REFRESH_EXPIRY
-        value: 30d
-
-      # Only used when the browser talks to this API cross-origin. With the
-      # Vercel rewrite in client/vercel.json the browser stays on one origin, so
-      # CORS is not exercised — this is here as a fallback. Set it to your Vercel
-      # URL, e.g. https://buddyscript.vercel.app
-      - key: CLIENT_ORIGIN
+      # The worker verifies no tokens, but config/env.js validates the environment
+      # as ONE object at boot — so these must be present. Failing at boot beats
+      # failing on the first job that happens to need one.
+      - key: JWT_SECRET
+        sync: false
+      - key: JWT_REFRESH_SECRET
         sync: false
 
-    # No disk is needed. Post images go to Cloudinary, so nothing durable is kept
-    # on this container's filesystem — which is what makes Render's ephemeral
-    # free-tier disk (wiped on every redeploy and on idle spin-down) a non-issue.
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: buddyscript-redis
+          property: connectionString
+
+      - key: CLOUDINARY_FOLDER
+        value: buddyscript/posts
+      - key: MONGODB_DB
+        value: buddyscript
+      - key: LOG_PRETTY
+        value: 'false'
+
+# ── Redis ───────────────────────────────────────────────────────────────────
+# Cache + rate-limit counters + feed timelines + BullMQ queues.
+#
+# `noeviction` is REQUIRED, and it is the one setting here that will bite you if it
+# is wrong. This Redis holds two very different kinds of data:
+#
+#   • The CACHE — disposable. Evicting it costs latency and nothing else.
+#   • The QUEUES — NOT disposable. An evicted BullMQ job is a post that never
+#     reached its followers, and it disappears silently.
+#
+# An LRU policy cannot tell those apart: under memory pressure it would start
+# deleting QUEUED JOBS to make room for cached posts. `noeviction` makes Redis
+# reject writes instead of losing data — loud rather than silent.
+#
+# (At real scale the right answer is TWO instances: an LRU one for the cache and a
+# noeviction one for the queues. One is correct at this size; noted in
+# ARCHITECTURE.md.)
+redis:
+  - name: buddyscript-redis
+    plan: starter
+    region: oregon
+    maxmemoryPolicy: noeviction
+    # Reachable only from inside the Render private network.
+    ipAllowList: []

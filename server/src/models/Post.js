@@ -21,13 +21,35 @@ const postSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// Public feed: keyset-paginated with `sort({ _id: -1 })`, so the index must lead
-// with the equality field (visibility) and end with the sort/cursor field.
+/**
+ * Indexes follow the ESR rule: Equality fields first, then Sort, then Range.
+ * Every feed query here is keyset-paginated — `sort({_id: -1})` with `_id < cursor`
+ * — so `_id` is simultaneously the sort key and the range key, and it belongs
+ * last in every one of them. That is what lets Mongo answer a page as a bounded
+ * index seek with no in-memory sort, at the same cost on page 50,000 as page 1.
+ */
+
+// The global/public feed. Equality on visibility, then the cursor.
 postSchema.index({ visibility: 1, _id: -1 });
 
-// A user's own posts (public + private) for the `$or` branch of the feed query
-// and for any future profile timeline.
+// A user's own posts at any visibility: the `scope=mine` feed and the `$or`
+// branch of the discovery feed.
 postSchema.index({ author: 1, _id: -1 });
+
+/**
+ * The CELEBRITY PULL index — the read half of the hybrid feed.
+ *
+ * When a viewer's timeline is assembled, posts by the celebrities they follow
+ * are not in the materialized timeline (we deliberately never fanned them out),
+ * so they are pulled live with:
+ *
+ *   { author: { $in: [...celebs] }, visibility: 'public', _id: { $lt: cursor } }
+ *
+ * `$in` on the leading field lets Mongo run one bounded seek per author and
+ * merge the results, so this stays a handful of index seeks rather than a scan —
+ * even though it is on the hot path of every single feed read.
+ */
+postSchema.index({ author: 1, visibility: 1, _id: -1 });
 
 postSchema.set('toJSON', { virtuals: true });
 
