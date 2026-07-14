@@ -4,18 +4,22 @@ The supplied Login / Register / Feed HTML pages, rebuilt as a React + Tailwind
 application on an Express + MongoDB backend.
 
 ```text
-├── client/          React 18 + Vite + Tailwind
-├── server/          Express + Mongoose (MongoDB Atlas) + Redis + BullMQ
-├── legacy-html/     the original HTML, kept for reference
-├── assets/          the original design assets (also copied to client/public)
-├── ARCHITECTURE.md  how this scales to millions of users, and why
-└── .env             config (already points at the provided Atlas cluster)
+├── client/            React 18 + Vite + Tailwind
+├── server/            Express + Mongoose (MongoDB Atlas) + Redis + BullMQ
+├── legacy-html/       the original HTML, kept for reference
+├── assets/            the original design assets (also copied to client/public)
+├── DOCUMENTATION.md   what was built, and every decision behind it
+├── ARCHITECTURE.md    how it scales to millions of users, and why
+└── .env               config (already points at the provided Atlas cluster)
 ```
 
-> **📐 [ARCHITECTURE.md](ARCHITECTURE.md)** — the design document: request flow,
-> the Redis caching strategy, the queue architecture, fan-out on write vs. on
-> read, what happens when a user with a million followers posts, the indexing
-> strategy, horizontal scaling, and the trade-offs each of those cost.
+## The three documents
+
+| | |
+| --- | --- |
+| 📘 **[DOCUMENTATION.md](DOCUMENTATION.md)** | **Start here — the complete project document.** Overview, stack, features, architecture, data model, indexing, caching, queues, feed generation, scaling, security, setup, API reference, design decisions and trade-offs, future improvements. |
+| 📐 **[ARCHITECTURE.md](ARCHITECTURE.md)** | Supplementary deep-dive on the system design and its failure modes. |
+| 📗 **README.md** (this file) | How to run it, how to deploy it, and how the supplied design was handled. |
 
 ## Running it
 
@@ -193,15 +197,18 @@ identical rendering).
 
 ## Data model
 
-Four collections. Posts, comments and likes are kept **separate** rather than
-embedding likes/comments inside a post document.
+Six collections. Posts, comments, likes and follows are all kept **separate**
+rather than embedded as arrays on a parent document.
 
 ```text
-users     { firstName, lastName, email (unique), password (bcrypt), sessions[] }
-posts     { author→users, content, image, visibility, likeCount, commentCount }
-comments  { post→posts, author→users, parent→comments|null, content,
-            likeCount, replyCount }
-likes     { user→users, targetType: 'post'|'comment', target }
+users         { firstName, lastName, email (unique), password (bcrypt),
+                sessions[], followerCount, followingCount }
+posts         { author→users, content, image, visibility, likeCount, commentCount }
+comments      { post→posts, author→users, parent→comments|null, content,
+                likeCount, replyCount }
+likes         { user→users, targetType: 'post'|'comment', target }
+follows       { follower→users, following→users }
+notifications { recipient→users, actor→users, type, entityType, entity, readAt }
 ```
 
 `posts.image` holds a **Cloudinary file name and nothing else** — see
@@ -213,16 +220,23 @@ MongoDB's 16 MB document limit and drags the entire liker list over the wire on
 every feed read. As a separate collection, post documents stay small and
 "who liked this" becomes a paginated query.
 
-**Indexes** (all created by `npm run seed` via `syncIndexes()`):
+**Indexes** — built by `npm run indexes` (a deploy step, not a boot step; see
+[ARCHITECTURE.md §8](ARCHITECTURE.md#8-database-indexing-strategy)):
 
 | Index | Serves |
 | --- | --- |
-| `posts { visibility: 1, _id: -1 }` | the public feed, newest-first |
+| `posts { visibility: 1, _id: -1 }` | the public discovery feed, newest-first |
 | `posts { author: 1, _id: -1 }` | your own posts (incl. private) |
+| `posts { author: 1, visibility: 1, _id: -1 }` | the **celebrity pull** on every home-timeline read |
 | `comments { post: 1, parent: 1, _id: -1 }` | a post's comments; a comment's replies |
 | `likes { targetType, target, user }` **unique** | one like per user per target |
 | `likes { targetType, target, _id: -1 }` | "who liked this", paginated |
 | `likes { user, targetType, target }` | "did *I* like these?" for a whole page |
+| `follows { follower, following }` **unique** | one edge per pair |
+| `follows { following: 1, _id: 1 }` | the **fan-out walk** — batched, keyset-paged |
+| `follows { follower: 1, _id: -1 }` | "who am I following" |
+| `notifications { recipient: 1, _id: -1 }` | "my notifications" |
+| `notifications { createdAt: 1 }` **TTL 30d** | Mongo reclaims the space itself |
 
 Each index leads with its equality fields and ends with the sort key, so MongoDB
 satisfies both the filter and the ordering from the index alone.
@@ -250,7 +264,7 @@ and would store the same ~100-byte prefix a million times over. Keeping the row
 down to the name makes all three a config edit.
 
 **Client and server derive that URL from the same formula**, in
-[`server/src/services/postImage.js`](server/src/services/postImage.js) and its
+[`server/src/services/postImage.service.js`](server/src/services/postImage.service.js) and its
 mirror [`client/src/utils/cloudinary.js`](client/src/utils/cloudinary.js). They
 must agree, so a change to one belongs in the other. The API therefore sends both:
 
