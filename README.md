@@ -6,7 +6,6 @@ application on an Express + MongoDB backend.
 ```text
 ├── client/            React 18 + Vite + Tailwind
 ├── server/            Express + Mongoose (MongoDB Atlas) + Redis + BullMQ
-├── legacy-html/       the original HTML, kept for reference
 ├── assets/            the original design assets (also copied to client/public)
 ├── DOCUMENTATION.md   what was built, and every decision behind it
 ├── ARCHITECTURE.md    how it scales to millions of users, and why
@@ -15,11 +14,11 @@ application on an Express + MongoDB backend.
 
 ## The three documents
 
-| | |
-| --- | --- |
-| 📘 **[DOCUMENTATION.md](DOCUMENTATION.md)** | **Start here — the complete project document.** Overview, stack, features, architecture, data model, indexing, caching, queues, feed generation, scaling, security, setup, API reference, design decisions and trade-offs, future improvements. |
-| 📐 **[ARCHITECTURE.md](ARCHITECTURE.md)** | Supplementary deep-dive on the system design and its failure modes. |
-| 📗 **README.md** (this file) | How to run it, how to deploy it, and how the supplied design was handled. |
+|                                                 |                                                                                                                                                                                                                                                        |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 📘**[DOCUMENTATION.md](DOCUMENTATION.md)** | **Start here — the complete project document.** Overview, stack, features, architecture, data model, indexing, caching, queues, feed generation, scaling, security, setup, API reference, design decisions and trade-offs, future improvements. |
+| 📐**[ARCHITECTURE.md](ARCHITECTURE.md)**   | Supplementary deep-dive on the system design and its failure modes.                                                                                                                                                                                    |
+| 📗**README.md** (this file)               | How to run it, how to deploy it, and how the supplied design was handled.                                                                                                                                                                              |
 
 ## Running it
 
@@ -65,12 +64,12 @@ The worker is what consumes the queues: feed fan-out, notifications, and image
 variant generation. Without it, posts and likes still work — the jobs simply queue
 up in Redis and drain the moment a worker appears.
 
-| Command | What it does |
-|---|---|
-| `npm run dev` | the API |
-| `npm run worker:dev` | the job consumers (fan-out, notifications, media) |
-| `npm run indexes` | build/sync MongoDB indexes — a **deploy step**, not a boot step |
-| `npm run seed` | seed the database |
+| Command                | What it does                                                          |
+| ---------------------- | --------------------------------------------------------------------- |
+| `npm run dev`        | the API                                                               |
+| `npm run worker:dev` | the job consumers (fan-out, notifications, media)                     |
+| `npm run indexes`    | build/sync MongoDB indexes — a**deploy step**, not a boot step |
+| `npm run seed`       | seed the database                                                     |
 
 ---
 
@@ -167,13 +166,13 @@ and is used only for UI the supplied HTML never had:
 > `visibility` core plugin was disabled. If you add a Tailwind plugin, check it
 > doesn't reintroduce a name Bootstrap already owns.
 
-| New UI | Why it didn't exist before |
-| --- | --- |
-| Public / "Only me" selector | the design has no privacy control |
-| "Who liked this" modal | requirement, no markup for it |
-| Image preview + remove | the composer's Photo button was decorative |
-| Feed tabs (All / My posts) | private posts are invisible in "All" without it |
-| Toasts, skeletons, delete confirm | no feedback/loading states in the design |
+| New UI                            | Why it didn't exist before                      |
+| --------------------------------- | ----------------------------------------------- |
+| Public / "Only me" selector       | the design has no privacy control               |
+| "Who liked this" modal            | requirement, no markup for it                   |
+| Image preview + remove            | the composer's Photo button was decorative      |
+| Feed tabs (All / My posts)        | private posts are invisible in "All" without it |
+| Toasts, skeletons, delete confirm | no feedback/loading states in the design        |
 
 Three deliberate deviations, all forced by the brief:
 
@@ -223,20 +222,20 @@ every feed read. As a separate collection, post documents stay small and
 **Indexes** — built by `npm run indexes` (a deploy step, not a boot step; see
 [ARCHITECTURE.md §8](ARCHITECTURE.md#8-database-indexing-strategy)):
 
-| Index | Serves |
-| --- | --- |
-| `posts { visibility: 1, _id: -1 }` | the public discovery feed, newest-first |
-| `posts { author: 1, _id: -1 }` | your own posts (incl. private) |
-| `posts { author: 1, visibility: 1, _id: -1 }` | the **celebrity pull** on every home-timeline read |
-| `comments { post: 1, parent: 1, _id: -1 }` | a post's comments; a comment's replies |
-| `likes { targetType, target, user }` **unique** | one like per user per target |
-| `likes { targetType, target, _id: -1 }` | "who liked this", paginated |
-| `likes { user, targetType, target }` | "did *I* like these?" for a whole page |
-| `follows { follower, following }` **unique** | one edge per pair |
-| `follows { following: 1, _id: 1 }` | the **fan-out walk** — batched, keyset-paged |
-| `follows { follower: 1, _id: -1 }` | "who am I following" |
-| `notifications { recipient: 1, _id: -1 }` | "my notifications" |
-| `notifications { createdAt: 1 }` **TTL 30d** | Mongo reclaims the space itself |
+| Index                                                   | Serves                                                  |
+| ------------------------------------------------------- | ------------------------------------------------------- |
+| `posts { visibility: 1, _id: -1 }`                    | the public discovery feed, newest-first                 |
+| `posts { author: 1, _id: -1 }`                        | your own posts (incl. private)                          |
+| `posts { author: 1, visibility: 1, _id: -1 }`         | the**celebrity pull** on every home-timeline read |
+| `comments { post: 1, parent: 1, _id: -1 }`            | a post's comments; a comment's replies                  |
+| `likes { targetType, target, user }` **unique** | one like per user per target                            |
+| `likes { targetType, target, _id: -1 }`               | "who liked this", paginated                             |
+| `likes { user, targetType, target }`                  | "did*I* like these?" for a whole page                 |
+| `follows { follower, following }` **unique**    | one edge per pair                                       |
+| `follows { following: 1, _id: 1 }`                    | the**fan-out walk** — batched, keyset-paged      |
+| `follows { follower: 1, _id: -1 }`                    | "who am I following"                                    |
+| `notifications { recipient: 1, _id: -1 }`             | "my notifications"                                      |
+| `notifications { createdAt: 1 }` **TTL 30d**    | Mongo reclaims the space itself                         |
 
 Each index leads with its equality fields and ends with the sort key, so MongoDB
 satisfies both the filter and the ordering from the index alone.
@@ -268,10 +267,10 @@ down to the name makes all three a config edit.
 mirror [`client/src/utils/cloudinary.js`](client/src/utils/cloudinary.js). They
 must agree, so a change to one belongs in the other. The API therefore sends both:
 
-| Field | | |
-| --- | --- | --- |
-| `image` | a ready-to-use URL | so a client needs no Cloudinary knowledge to render a post |
-| `imageId` | the bare file name | so a client that *has* that knowledge can ask for its own width |
+| Field       |                    |                                                                  |
+| ----------- | ------------------ | ---------------------------------------------------------------- |
+| `image`   | a ready-to-use URL | so a client needs no Cloudinary knowledge to render a post       |
+| `imageId` | the bare file name | so a client that*has* that knowledge can ask for its own width |
 
 That second field is what lets the browser build a `srcSet`. Only the browser
 knows its viewport and pixel density, so only the browser can pick the right file:
@@ -399,24 +398,24 @@ Both suites were run against the live Atlas cluster and a real headless browser.
 
 All routes require a session except `register` / `login` / `refresh`.
 
-| Method | Route | |
-| --- | --- | --- |
-| POST | `/api/auth/register` | first/last name, email, password |
-| POST | `/api/auth/login` | |
-| POST | `/api/auth/refresh` | rotates the refresh token |
-| POST | `/api/auth/logout` | revokes the session server-side |
-| GET | `/api/auth/me` | |
-| GET | `/api/posts` | the **discovery** feed: `?cursor&limit&scope=all\|mine` |
-| POST | `/api/posts` | multipart: `content`, `visibility`, `image` |
-| PATCH / DELETE | `/api/posts/:id` | author only |
-| GET | `/api/feed` | the **home timeline** — hybrid fan-out, `?cursor&limit` |
-| POST / DELETE | `/api/follows/:id` | follow / unfollow a user |
-| GET | `/api/follows/:id/followers` | paginated |
-| GET / POST | `/api/posts/:id/comments` | `parentId` on POST makes it a reply |
-| GET | `/api/comments/:id/replies` | |
-| DELETE | `/api/comments/:id` | comment author, or the post's author |
-| POST | `/api/likes/toggle` | `{ targetType, targetId }` — posts and comments |
-| GET | `/api/likes` | `?targetType&targetId` — who liked it, paginated |
+| Method         | Route                          |                                                                 |
+| -------------- | ------------------------------ | --------------------------------------------------------------- |
+| POST           | `/api/auth/register`         | first/last name, email, password                                |
+| POST           | `/api/auth/login`            |                                                                 |
+| POST           | `/api/auth/refresh`          | rotates the refresh token                                       |
+| POST           | `/api/auth/logout`           | revokes the session server-side                                 |
+| GET            | `/api/auth/me`               |                                                                 |
+| GET            | `/api/posts`                 | the**discovery** feed: `?cursor&limit&scope=all\|mine`   |
+| POST           | `/api/posts`                 | multipart:`content`, `visibility`, `image`                |
+| PATCH / DELETE | `/api/posts/:id`             | author only                                                     |
+| GET            | `/api/feed`                  | the**home timeline** — hybrid fan-out, `?cursor&limit` |
+| POST / DELETE  | `/api/follows/:id`           | follow / unfollow a user                                        |
+| GET            | `/api/follows/:id/followers` | paginated                                                       |
+| GET / POST     | `/api/posts/:id/comments`    | `parentId` on POST makes it a reply                           |
+| GET            | `/api/comments/:id/replies`  |                                                                 |
+| DELETE         | `/api/comments/:id`          | comment author, or the post's author                            |
+| POST           | `/api/likes/toggle`          | `{ targetType, targetId }` — posts and comments              |
+| GET            | `/api/likes`                 | `?targetType&targetId` — who liked it, paginated             |
 
 **Two feeds, deliberately.** `/api/posts` is the global discovery feed (everything
 public, newest first) and is what the React client renders — its contract is
